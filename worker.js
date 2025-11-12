@@ -1,142 +1,114 @@
-export default {
-  async fetch(request, env) {
-    if (request.method === "OPTIONS") {
-      return new Response("", { headers: cors() });
+addEventListener("fetch", event => {
+  event.respondWith(handleRequest(event.request, event));
+});
+
+async function handleRequest(request, event) {
+  const url = new URL(request.url);
+  const params = url.searchParams;
+
+  // === ⚙️ 配置区 ===
+  const DOWNLOAD_LINKS = [
+    "https://modskyshop168-sudo.github.io/cc/app1.apk",
+    "https://modskyshop168-sudo.github.io/cc/app2.apk",
+    "https://modskyshop168-sudo.github.io/cc/app3.apk",
+    "https://modskyshop168-sudo.github.io/cc/app4.apk",
+    "https://modskyshop168-sudo.github.io/cc/app5.apk"
+  ];
+  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html"; // 🚫 超过设备限制
+  const SIGN_SECRET = "mySuperSecretKey";
+  const MAX_DEVICES = 3; // ✅ 允许最多 3 台设备
+  // =================
+
+  // === 参数验证 ===
+  const uid = params.get("uid");
+  const zone = parseInt(params.get("zone") || "0");
+  const sig = params.get("sig");
+
+  if (!uid || !sig || zone < 1 || zone > 5) {
+    return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
+  }
+
+  // === 签名验证 ===
+  const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
+  if (!timingSafeCompare(expectedSig, sig)) {
+    return new Response("🚫 Invalid Signature", { status: 403 });
+  }
+
+  // === 设备指纹 ===
+  const ua = request.headers.get("User-Agent") || "unknown";
+  const deviceFingerprint = await getDeviceFingerprint(ua, uid, SIGN_SECRET);
+
+  // === KV 检查 ===
+  if (typeof UID_BINDINGS === "undefined") {
+    return new Response("Service unavailable. (KV missing)", { status: 503 });
+  }
+
+  const key = `uid:${uid}`;
+  let stored = null;
+
+  try {
+    stored = await UID_BINDINGS.get(key, "json");
+  } catch (e) {
+    return new Response("Service temporarily unavailable. (KV read error)", { status: 503 });
+  }
+
+  // === 首次登入 → 新建记录 ===
+  if (!stored) {
+    const toStore = {
+      devices: [deviceFingerprint],
+      createdAt: new Date().toISOString()
+    };
+    await UID_BINDINGS.put(key, JSON.stringify(toStore));
+  } 
+  // === 已登入过 ===
+  else {
+    const devices = stored.devices || [];
+
+    if (devices.includes(deviceFingerprint)) {
+      // 已登记设备 → 允许访问
+    } 
+    else if (devices.length < MAX_DEVICES) {
+      // 新设备但未超过上限
+      devices.push(deviceFingerprint);
+      await UID_BINDINGS.put(key, JSON.stringify({ devices, updatedAt: new Date().toISOString() }));
+    } 
+    else {
+      // 🚫 超过3台 → 封锁
+      return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
+  }
 
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", {
-        status: 405,
-        headers: cors(),
-      });
-    }
+  // === 跳转对应下载链接 ===
+  const targetURL = DOWNLOAD_LINKS[zone - 1];
+  return Response.redirect(targetURL, 302);
+}
 
-    try {
-      const { longURL } = await request.json();
+/** 🔑 HMAC 签名生成 (SHA-256) */
+async function sign(text, secret) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(signature))
+    .map(b => b.toString(16).padStart(2, "0"))
+    .join("");
+}
 
-      if (!longURL || !/^https?:\/\//i.test(longURL)) {
-        return new Response(JSON.stringify({ error: "Invalid URL" }), {
-          status: 400,
-          headers: cors(),
-        });
-      }
+/** ⏱ 时间安全比较 */
+function timingSafeCompare(aHex, bHex) {
+  if (aHex.length !== bHex.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aHex.length; i++) diff |= aHex.charCodeAt(i) ^ bHex.charCodeAt(i);
+  return diff === 0;
+}
 
-      // === ⚙️ 配置 ===
-      const SHORTIO_DOMAIN = "appwt.short.gy";
-      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq";
-      const SHORTIO_API = "https://api.short.io/links";
-
-      let attempt = 0;
-      let finalData = null;
-      let lastError = null;
-
-      // === 🔁 最多尝试 5 次生成短链 ===
-      while (attempt < 5 && !finalData) {
-        attempt++;
-
-        try {
-          // === 先检查是否已有相同原始链接 ===
-          const checkURL = `${SHORTIO_API}?originalURL=${encodeURIComponent(longURL)}&domain=${SHORTIO_DOMAIN}`;
-          const checkRes = await fetch(checkURL, {
-            headers: {
-              accept: "application/json",
-              authorization: SHORTIO_SECRET_KEY,
-            },
-          });
-
-          const checkData = await checkRes.json();
-
-          if (checkData?.links?.length) {
-            // 如果已经存在，换一个随机 path 创建新短链
-            console.log(`⚠️ Attempt ${attempt}: Link exists, trying new short code...`);
-          }
-
-          // === 随机生成 5 位数短码 ===
-          let shortCode;
-          let isUnique = false;
-
-          for (let i = 0; i < 10; i++) {
-            const candidate = Math.floor(10000 + Math.random() * 80000).toString();
-
-            const existsRes = await fetch(
-              `${SHORTIO_API}?path=${candidate}&domain=${SHORTIO_DOMAIN}`,
-              {
-                headers: {
-                  accept: "application/json",
-                  authorization: SHORTIO_SECRET_KEY,
-                },
-              }
-            );
-
-            const existsData = await existsRes.json();
-
-            if (!existsData?.links?.length) {
-              shortCode = candidate;
-              isUnique = true;
-              break;
-            }
-          }
-
-          if (!isUnique) {
-            throw new Error("No available short code found after 10 checks");
-          }
-
-          // === 创建短链 ===
-          const createRes = await fetch(SHORTIO_API, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: SHORTIO_SECRET_KEY,
-            },
-            body: JSON.stringify({
-              domain: SHORTIO_DOMAIN,
-              originalURL: longURL,
-              path: shortCode,
-            }),
-          });
-
-          const createData = await createRes.json();
-
-          if (createData.shortURL) {
-            finalData = {
-              shortURL: createData.shortURL,
-              code: shortCode,
-              reused: checkData?.links?.length > 0,
-              attempt,
-            };
-          } else {
-            lastError = createData.error || "Failed to create short link";
-          }
-        } catch (err) {
-          lastError = err.message;
-        }
-      }
-
-      if (!finalData) {
-        return new Response(
-          JSON.stringify({
-            error: "Failed to create unique short link after 5 attempts",
-            details: lastError,
-          }),
-          { status: 500, headers: cors() }
-        );
-      }
-
-      return new Response(JSON.stringify(finalData), { headers: cors() });
-    } catch (err) {
-      return new Response(
-        JSON.stringify({ error: "Unexpected Error", details: err.message }),
-        { status: 500, headers: cors() }
-      );
-    }
-  },
-};
-
-// === 🌐 CORS 支持 ===
-function cors() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type",
-  };
+/** 📱 设备指纹 */
+async function getDeviceFingerprint(ua, uid, secret) {
+  const cleanUA = ua.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
+  const base = `${uid}:${cleanUA}`;
+  return await sign(base, secret);
 }
