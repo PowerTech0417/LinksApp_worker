@@ -1,92 +1,142 @@
-addEventListener("fetch", event => {
-  event.respondWith(handleRequest(event.request));
-});
-
-async function handleRequest(request) {
-  const url = new URL(request.url);
-  const uid = url.searchParams.get("uid");
-  const zone = url.searchParams.get("zone") || "1";
-  const sig = url.searchParams.get("sig");
-
-  // === ⚙️ 配置区 ===
-  const SIGN_SECRET = "mySuperSecretKey";
-  const MAX_DEVICES = 3;
-
-  // ✅ 五个下载链接（自定义替换）
-  const DOWNLOAD_LINKS = {
-    "1": "https://example.com/app1.apk",
-    "2": "https://example.com/app2.apk",
-    "3": "https://example.com/app3.apk",
-    "4": "https://example.com/app4.apk",
-    "5": "https://example.com/app5.apk",
-  };
-
-  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
-  // =================
-
-  // 参数检查
-  if (!uid || !sig) {
-    return new Response("🚫 Invalid parameters", { status: 403 });
-  }
-
-  // 签名验证
-  const text = `${uid}:${zone}`;
-  const expectedSig = await sign(text, SIGN_SECRET);
-  if (!timingSafeCompare(expectedSig, sig)) {
-    return new Response("🚫 Invalid signature", { status: 403 });
-  }
-
-  // 设备指纹
-  const ua = request.headers.get("User-Agent") || "unknown";
-  const fingerprint = await getFingerprint(ua, uid, SIGN_SECRET);
-
-  // === 设备限制逻辑 ===
-  const key = `uid:${uid}:zone:${zone}`;
-  let record = await UID_BINDINGS.get(key, "json");
-
-  if (!record) {
-    record = { devices: [fingerprint] };
-    await UID_BINDINGS.put(key, JSON.stringify(record));
-  } else {
-    const devices = record.devices || [];
-
-    if (!devices.includes(fingerprint)) {
-      if (devices.length >= MAX_DEVICES) {
-        return Response.redirect(DEVICE_CONFLICT_URL, 302);
-      }
-      devices.push(fingerprint);
-      await UID_BINDINGS.put(key, JSON.stringify({ devices }));
+export default {
+  async fetch(request, env) {
+    if (request.method === "OPTIONS") {
+      return new Response("", { headers: cors() });
     }
-  }
 
-  // === 重定向到下载链接 ===
-  const redirectUrl = DOWNLOAD_LINKS[zone] || DOWNLOAD_LINKS["1"];
-  return Response.redirect(redirectUrl, 302);
-}
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", {
+        status: 405,
+        headers: cors(),
+      });
+    }
 
-/** 签名函数 (HMAC-SHA256) */
-async function sign(text, secret) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
-}
+    try {
+      const { longURL } = await request.json();
 
-/** 安全比较 */
-function timingSafeCompare(a, b) {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
-}
+      if (!longURL || !/^https?:\/\//i.test(longURL)) {
+        return new Response(JSON.stringify({ error: "Invalid URL" }), {
+          status: 400,
+          headers: cors(),
+        });
+      }
 
-/** 设备指纹 */
-async function getFingerprint(ua, uid, secret) {
-  const base = `${uid}:${ua.toLowerCase().slice(0, 100)}`;
-  return await sign(base, secret);
+      // === ⚙️ 配置 ===
+      const SHORTIO_DOMAIN = "appwt.short.gy";
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq";
+      const SHORTIO_API = "https://api.short.io/links";
+
+      let attempt = 0;
+      let finalData = null;
+      let lastError = null;
+
+      // === 🔁 最多尝试 5 次生成短链 ===
+      while (attempt < 5 && !finalData) {
+        attempt++;
+
+        try {
+          // === 先检查是否已有相同原始链接 ===
+          const checkURL = `${SHORTIO_API}?originalURL=${encodeURIComponent(longURL)}&domain=${SHORTIO_DOMAIN}`;
+          const checkRes = await fetch(checkURL, {
+            headers: {
+              accept: "application/json",
+              authorization: SHORTIO_SECRET_KEY,
+            },
+          });
+
+          const checkData = await checkRes.json();
+
+          if (checkData?.links?.length) {
+            // 如果已经存在，换一个随机 path 创建新短链
+            console.log(`⚠️ Attempt ${attempt}: Link exists, trying new short code...`);
+          }
+
+          // === 随机生成 5 位数短码 ===
+          let shortCode;
+          let isUnique = false;
+
+          for (let i = 0; i < 10; i++) {
+            const candidate = Math.floor(10000 + Math.random() * 80000).toString();
+
+            const existsRes = await fetch(
+              `${SHORTIO_API}?path=${candidate}&domain=${SHORTIO_DOMAIN}`,
+              {
+                headers: {
+                  accept: "application/json",
+                  authorization: SHORTIO_SECRET_KEY,
+                },
+              }
+            );
+
+            const existsData = await existsRes.json();
+
+            if (!existsData?.links?.length) {
+              shortCode = candidate;
+              isUnique = true;
+              break;
+            }
+          }
+
+          if (!isUnique) {
+            throw new Error("No available short code found after 10 checks");
+          }
+
+          // === 创建短链 ===
+          const createRes = await fetch(SHORTIO_API, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: SHORTIO_SECRET_KEY,
+            },
+            body: JSON.stringify({
+              domain: SHORTIO_DOMAIN,
+              originalURL: longURL,
+              path: shortCode,
+            }),
+          });
+
+          const createData = await createRes.json();
+
+          if (createData.shortURL) {
+            finalData = {
+              shortURL: createData.shortURL,
+              code: shortCode,
+              reused: checkData?.links?.length > 0,
+              attempt,
+            };
+          } else {
+            lastError = createData.error || "Failed to create short link";
+          }
+        } catch (err) {
+          lastError = err.message;
+        }
+      }
+
+      if (!finalData) {
+        return new Response(
+          JSON.stringify({
+            error: "Failed to create unique short link after 5 attempts",
+            details: lastError,
+          }),
+          { status: 500, headers: cors() }
+        );
+      }
+
+      return new Response(JSON.stringify(finalData), { headers: cors() });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ error: "Unexpected Error", details: err.message }),
+        { status: 500, headers: cors() }
+      );
+    }
+  },
+};
+
+// === 🌐 CORS 支持 ===
+function cors() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
 }
