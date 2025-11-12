@@ -1,6 +1,6 @@
 export default {
   async fetch(request, env, ctx) {
-    // === ✅ 允许 CORS ===
+    // ✅ CORS 支持
     if (request.method === "OPTIONS") {
       return new Response("", { headers: corsHeaders() });
     }
@@ -14,80 +14,49 @@ export default {
 
     try {
       const { uid, version } = await request.json();
-      if (!uid || !version) throw new Error("缺少参数：uid 或 version");
 
-      // === 🧩 Short.io 设置 ===
-      const SHORTIO_DOMAIN = "appwt.short.gy";
-      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq";
+      if (!uid) throw new Error("Missing uid");
+      if (!version) throw new Error("Missing version");
 
-      // === 📦 10 个版本的下载链接（改成你自己的下载地址） ===
-      const DOWNLOAD_LINKS = {
-        1: "https://example.com/downloads/app_v1.apk",
-        2: "https://example.com/downloads/app_v2.apk",
-        3: "https://example.com/downloads/app_v3.apk",
-        4: "https://example.com/downloads/app_v4.apk",
-        5: "https://example.com/downloads/app_v5.apk",
-        6: "https://example.com/downloads/app_v6.apk",
-        7: "https://example.com/downloads/app_v7.apk",
-        8: "https://example.com/downloads/app_v8.apk",
-        9: "https://example.com/downloads/app_v9.apk",
-        10: "https://example.com/downloads/app_v10.apk",
+      // ✅ 版本 → 下载链接映射表（可自行替换）
+      const versionMap = {
+        1: "https://example.com/download/v1.apk",
+        2: "https://example.com/download/v2.apk",
+        3: "https://example.com/download/v3.apk",
+        4: "https://example.com/download/v4.apk",
+        5: "https://example.com/download/v5.apk",
+        6: "https://example.com/download/v6.apk",
+        7: "https://example.com/download/v7.apk",
+        8: "https://example.com/download/v8.apk",
+        9: "https://example.com/download/v9.apk",
+        10: "https://example.com/download/v10.apk"
       };
 
-      const longURL = DOWNLOAD_LINKS[version];
-      if (!longURL) throw new Error(`版本 ${version} 暂无可用下载链接`);
+      const longURL = versionMap[version];
+      if (!longURL) throw new Error(`无效的版本号: ${version}`);
 
-      // === 🧠 智能标题生成 ===
-      const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
-      const dateMY = malaysiaNow.toISOString().slice(0, 10);
-      const title = `📦 下载版本 ${version} (${uid} · ${dateMY})`;
+      // ✅ 生成短链接逻辑（示例用随机字符串代替）
+      const shortCode = Math.random().toString(36).substring(2, 8);
+      const shortURL = `https://shortenworld.com/${shortCode}`;
 
-      // === 🔢 唯一路径 ID ===
-      const path = "v" + version + "_" + Math.floor(10000 + Math.random() * 90000);
+      const title = `下载版本 ${version} (${uid})`;
 
-      // === 🚀 调用 Short.io API ===
-      const res = await fetch("https://api.short.io/links", {
-        method: "POST",
-        headers: {
-          Authorization: SHORTIO_SECRET_KEY,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          domain: SHORTIO_DOMAIN,
-          originalURL: longURL,
-          path,
-          title,
-        }),
+      return new Response(JSON.stringify({ shortURL, title }), {
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Short.io API 错误");
-
-      // === ✅ 返回 JSON 给页面 ===
-      return new Response(
-        JSON.stringify({
-          success: true,
-          shortURL: data.shortURL,
-          title,
-        }),
-        { status: 200, headers: corsHeaders() }
-      );
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), {
-        status: 500,
-        headers: corsHeaders(),
+        status: 400,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
       });
     }
   },
 };
 
-// === 🌐 CORS 支持 ===
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Credentials": "true",
-    "Content-Type": "application/json",
+    "Access-Control-Allow-Headers": "Content-Type",
   };
 }
