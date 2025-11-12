@@ -1,123 +1,141 @@
 export default {
   async fetch(request, env, ctx) {
-    // CORS preflight
+    // ✅ CORS 处理
     if (request.method === "OPTIONS") {
       return new Response("", { headers: corsHeaders() });
     }
 
     if (request.method !== "POST") {
-      return new Response(JSON.stringify({ error: "Method Not Allowed" }), {
+      return new Response("Method Not Allowed", {
         status: 405,
-        headers: corsHeaders()
+        headers: corsHeaders(),
       });
     }
 
     try {
-      // 解析 body（容错）
-      let body = {};
-      try {
-        body = await request.json();
-      } catch (e) {
-        throw new Error("Invalid JSON body");
-      }
-
-      const { uid, version, longURL: providedLongURL } = body;
+      // === 📦 读取请求体 ===
+      const body = await request.json();
+      const { longURL: providedLongURL, uid, version, redirect } = body;
 
       if (!uid) throw new Error("Missing uid");
+      if (!version && !providedLongURL) throw new Error("Missing version or longURL");
 
-      // === 版本 -> 下载链接映射（请替换为你的真实下载地址） ===
-      const DOWNLOAD_MAP = {
-        "1": "https://example.com/downloads/app_v1.apk",
-        "2": "https://example.com/downloads/app_v2.apk",
-        "3": "https://example.com/downloads/app_v3.apk",
-        "4": "https://example.com/downloads/app_v4.apk",
-        "5": "https://example.com/downloads/app_v5.apk",
-        "6": "https://example.com/downloads/app_v6.apk",
-        "7": "https://example.com/downloads/app_v7.apk",
-        "8": "https://example.com/downloads/app_v8.apk",
-        "9": "https://example.com/downloads/app_v9.apk",
-        "10": "https://example.com/downloads/app_v10.apk"
+      // ✅ 自动匹配下载链接（可修改为你自己的下载地址）
+      const versionMap = {
+        1: "https://example.com/download/v1.apk",
+        2: "https://example.com/download/v2.apk",
+        3: "https://example.com/download/v3.apk",
+        4: "https://example.com/download/v4.apk",
+        5: "https://example.com/download/v5.apk",
+        6: "https://example.com/download/v6.apk",
+        7: "https://example.com/download/v7.apk",
+        8: "https://example.com/download/v8.apk",
+        9: "https://example.com/download/v9.apk",
+        10: "https://example.com/download/v10.apk"
       };
 
-      // 先看有没有提供 longURL（向后兼容）
-      let longURL = providedLongURL;
+      const longURL = providedLongURL || versionMap[version];
+      if (!longURL) throw new Error(`无效的版本号或缺少 longURL: ${version}`);
 
-      // 若没有提供，则用 version 去映射
-      if (!longURL) {
-        if (!version) throw new Error("Missing version and no longURL provided");
-        longURL = DOWNLOAD_MAP[String(version)];
-        if (!longURL) throw new Error(`No download link mapped for version: ${version}`);
-      }
+      // === 🧩 Short.io 配置 ===
+      const SHORTIO_DOMAIN = "appwt.short.gy"; // ✅ 你的短链接域名
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq"; // ✅ API Key
 
-      // === 智能标题 ===
+      // === 📱 从 UA 识别设备 / APP ===
+      const ua = request.headers.get("User-Agent") || "";
+      const appType = detectApp(ua);
+
+      // === 🧠 智能标题区（自动组合标题）===
+      let title = "📦 OTT 下载链接";
+      if (appType) title += ` · ${appType}`;
+      if (version) title += ` v${version}`;
+
+      // 🇲🇾 加入马来西亚日期
       const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
       const dateMY = malaysiaNow.toISOString().slice(0, 10);
-      const title = `📦 下载版本 ${version || "auto"} (${uid} · ${dateMY})`;
+      if (uid) title += ` (${uid} · ${dateMY})`;
+      else title += ` (${dateMY})`;
 
-      // === 生成短链 ===
-      // 如果你想使用 Short.io（真实 API），把 useShortIo = true，
-      // 并在 Worker 环境变量 SHORTIO_SECRET_KEY 中设置 key。
-      const useShortIo = true;
-      if (useShortIo) {
-        const SHORTIO_DOMAIN = "appwt.short.gy"; // 修改为你的短域名
-        const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq";
+      // === 🔁 自动生成唯一短链 ID ===
+      let id, shortData;
+      for (let i = 0; i < 5; i++) {
+        id = "id" + Math.floor(1000 + Math.random() * 90000);
 
-        // 生成唯一 path（可再改成更友好的规则）
-        const path = "v" + (version || "auto") + "_" + Math.floor(10000 + Math.random() * 90000);
-
-        const shortRes = await fetch("https://api.short.io/links", {
+        const res = await fetch("https://api.short.io/links", {
           method: "POST",
           headers: {
             Authorization: SHORTIO_SECRET_KEY,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
           },
           body: JSON.stringify({
             domain: SHORTIO_DOMAIN,
             originalURL: longURL,
-            path,
-            title
-          })
+            path: id,
+            title,
+          }),
         });
 
-        const shortData = await shortRes.json();
-        if (!shortRes.ok) {
-          // 返回 Short.io 的错误信息，便于排查
-          throw new Error(shortData.error || JSON.stringify(shortData));
+        const data = await res.json();
+
+        if (res.ok && data.shortURL) {
+          shortData = data;
+          break;
         }
 
-        return new Response(
-          JSON.stringify({
-            success: true,
-            shortURL: shortData.shortURL,
-            title,
-            longURL
-          }),
-          { status: 200, headers: corsHeaders() }
-        );
-      } else {
-        // 用简易模拟短链（仅测试用）
-        const code = Math.random().toString(36).slice(2, 8);
-        const shortURL = `https://shorten.example/${code}`;
-        return new Response(
-          JSON.stringify({ success: true, shortURL, title, longURL }),
-          { status: 200, headers: corsHeaders() }
-        );
+        if (data.error && data.error.includes("already exists")) continue;
+        else throw new Error(data.error || "Short.io API Error");
       }
+
+      if (!shortData) throw new Error("无法生成短链接，请稍后重试。");
+
+      // === 📺 redirect 模式（TV 设备跳转）===
+      if (redirect === true || redirect === "1") {
+        return Response.redirect(shortData.shortURL, 302);
+      }
+
+      // === 默认返回 JSON ===
+      return new Response(
+        JSON.stringify({
+          shortURL: shortData.shortURL,
+          title,
+          appType,
+          version,
+          longURL,
+          id,
+          createdAt: new Date().toISOString(),
+        }),
+        {
+          status: 200,
+          headers: corsHeaders(),
+        }
+      );
     } catch (err) {
       return new Response(JSON.stringify({ error: err.message }), {
         status: 400,
-        headers: corsHeaders()
+        headers: corsHeaders(),
       });
     }
-  }
+  },
 };
 
+// === 🌐 CORS 支持 ===
 function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
     "Access-Control-Allow-Credentials": "true",
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
   };
+}
+
+/** 📲 智能识别 OTT App 类型 */
+function detectApp(ua) {
+  const u = ua.toLowerCase();
+  if (u.includes("ott player")) return "OTT Player 🟢";
+  if (u.includes("ott tv")) return "OTT TV 🔵";
+  if (u.includes("ott navigator")) return "OTT Navigator 🟣";
+  if (u.includes("smart tv")) return "Smart TV";
+  if (u.includes("android")) return "Android 📱";
+  return "Unknown Device";
 }
