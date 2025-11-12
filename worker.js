@@ -1,89 +1,70 @@
 addEventListener("fetch", event => {
-  event.respondWith(handleRequest(event.request, event));
+  event.respondWith(handleRequest(event.request));
 });
 
-async function handleRequest(request, event) {
+async function handleRequest(request) {
   const url = new URL(request.url);
-  const path = url.pathname;
-  const params = url.searchParams;
+  const uid = url.searchParams.get("uid");
+  const zone = url.searchParams.get("zone") || "1";
+  const sig = url.searchParams.get("sig");
 
   // === ⚙️ 配置区 ===
-  const GITHUB_PAGES_URL = "https://modskyshop168-sudo.github.io/cc/";
-  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
   const SIGN_SECRET = "mySuperSecretKey";
-  const MAX_DEVICES = 3; // ✅ 允许最多 3 台设备
+  const MAX_DEVICES = 3;
+
+  // ✅ 五个下载链接（自定义替换）
+  const DOWNLOAD_LINKS = {
+    "1": "https://example.com/app1.apk",
+    "2": "https://example.com/app2.apk",
+    "3": "https://example.com/app3.apk",
+    "4": "https://example.com/app4.apk",
+    "5": "https://example.com/app5.apk",
+  };
+
+  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
   // =================
 
-  // === 参数验证 ===
-  const uid = params.get("uid");
-  const sig = params.get("sig");
-
+  // 参数检查
   if (!uid || !sig) {
-    return new Response("🚫 Invalid Link: Missing parameters", { status: 403 });
+    return new Response("🚫 Invalid parameters", { status: 403 });
   }
 
-  // === 签名验证（不含过期时间）===
-  const text = `${uid}`;
+  // 签名验证
+  const text = `${uid}:${zone}`;
   const expectedSig = await sign(text, SIGN_SECRET);
   if (!timingSafeCompare(expectedSig, sig)) {
-    return new Response("🚫 Invalid Signature", { status: 403 });
+    return new Response("🚫 Invalid signature", { status: 403 });
   }
 
-  // === 设备指纹 ===
+  // 设备指纹
   const ua = request.headers.get("User-Agent") || "unknown";
-  const deviceFingerprint = await getDeviceFingerprint(ua, uid, SIGN_SECRET);
+  const fingerprint = await getFingerprint(ua, uid, SIGN_SECRET);
 
-  // === KV 检查 ===
-  if (typeof UID_BINDINGS === "undefined") {
-    return new Response("Service unavailable. (KV missing)", { status: 503 });
-  }
+  // === 设备限制逻辑 ===
+  const key = `uid:${uid}:zone:${zone}`;
+  let record = await UID_BINDINGS.get(key, "json");
 
-  const key = `uid:${uid}`;
-  let stored = null;
+  if (!record) {
+    record = { devices: [fingerprint] };
+    await UID_BINDINGS.put(key, JSON.stringify(record));
+  } else {
+    const devices = record.devices || [];
 
-  try {
-    stored = await UID_BINDINGS.get(key, "json");
-  } catch (e) {
-    return new Response("Service temporarily unavailable. (KV read error)", { status: 503 });
-  }
-
-  // === 首次登入 → 新建记录 ===
-  if (!stored) {
-    const toStore = {
-      devices: [deviceFingerprint],
-      createdAt: new Date().toISOString()
-    };
-    await UID_BINDINGS.put(key, JSON.stringify(toStore));
-  } 
-  // === 已登入过 ===
-  else {
-    const devices = stored.devices || [];
-
-    // 已存在 → 允许访问
-    if (devices.includes(deviceFingerprint)) {
-      // 不更新
-    } 
-    // 新设备 → 检查数量限制
-    else if (devices.length < MAX_DEVICES) {
-      devices.push(deviceFingerprint);
-      await UID_BINDINGS.put(key, JSON.stringify({ devices, updatedAt: new Date().toISOString() }));
-    } 
-    // 超过 3 台 → 封锁
-    else {
-      return Response.redirect(DEVICE_CONFLICT_URL, 302);
+    if (!devices.includes(fingerprint)) {
+      if (devices.length >= MAX_DEVICES) {
+        return Response.redirect(DEVICE_CONFLICT_URL, 302);
+      }
+      devices.push(fingerprint);
+      await UID_BINDINGS.put(key, JSON.stringify({ devices }));
     }
   }
 
-  // ✅ 正常访问
-  return fetch(`${GITHUB_PAGES_URL}${path}${url.search}`, {
-    method: request.method,
-    headers: request.headers,
-    body: request.body,
-    redirect: "follow"
-  });
+  // === 重定向到下载链接 ===
+  const redirectUrl = DOWNLOAD_LINKS[zone] || DOWNLOAD_LINKS["1"];
+  return Response.redirect(redirectUrl, 302);
 }
 
-/** 🔑 HMAC 签名生成 (SHA-256) */
+/** 签名函数 (HMAC-SHA256) */
 async function sign(text, secret) {
   const key = await crypto.subtle.importKey(
     "raw",
@@ -93,22 +74,19 @@ async function sign(text, secret) {
     ["sign"]
   );
   const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(signature))
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** ⏱ 时间安全比较 */
-function timingSafeCompare(aHex, bHex) {
-  if (aHex.length !== bHex.length) return false;
+/** 安全比较 */
+function timingSafeCompare(a, b) {
+  if (a.length !== b.length) return false;
   let diff = 0;
-  for (let i = 0; i < aHex.length; i++) diff |= aHex.charCodeAt(i) ^ bHex.charCodeAt(i);
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
 }
 
-/** 📱 设备指纹 */
-async function getDeviceFingerprint(ua, uid, secret) {
-  const cleanUA = ua.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
-  const base = `${uid}:${cleanUA}`;
+/** 设备指纹 */
+async function getFingerprint(ua, uid, secret) {
+  const base = `${uid}:${ua.toLowerCase().slice(0, 100)}`;
   return await sign(base, secret);
 }
