@@ -1,114 +1,88 @@
-addEventListener("fetch", event => {
-  event.respondWith(handleRequest(event.request, event));
-});
+export default {
+  async fetch(request, env, ctx) {
+    // === 支持 CORS ===
+    if (request.method === "OPTIONS") {
+      return new Response("", { headers: corsHeaders() });
+    }
+    if (request.method !== "POST") {
+      return new Response("Method Not Allowed", {
+        status: 405,
+        headers: corsHeaders(),
+      });
+    }
 
-async function handleRequest(request, event) {
-  const url = new URL(request.url);
-  const params = url.searchParams;
+    try {
+      const { uid, version } = await request.json();
+      if (!uid || !version)
+        throw new Error("缺少参数（uid 或 version）");
 
-  // === ⚙️ 配置区 ===
-  const DOWNLOAD_LINKS = [
-    "https://modskyshop168-sudo.github.io/cc/app1.apk",
-    "https://modskyshop168-sudo.github.io/cc/app2.apk",
-    "https://modskyshop168-sudo.github.io/cc/app3.apk",
-    "https://modskyshop168-sudo.github.io/cc/app4.apk",
-    "https://modskyshop168-sudo.github.io/cc/app5.apk"
-  ];
-  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html"; // 🚫 超过设备限制
-  const SIGN_SECRET = "mySuperSecretKey";
-  const MAX_DEVICES = 3; // ✅ 允许最多 3 台设备
-  // =================
+      // === 版本号映射 ===
+      const DOWNLOAD_MAP = {
+        1: "https://example.com/app_v1.apk",
+        2: "https://example.com/app_v2.apk",
+        3: "https://example.com/app_v3.apk",
+        4: "https://example.com/app_v4.apk",
+        5: "https://example.com/app_v5.apk",
+        6: "https://example.com/app_v6.apk",
+        7: "https://example.com/app_v7.apk",
+        8: "https://example.com/app_v8.apk",
+        9: "https://example.com/app_v9.apk",
+        10: "https://example.com/app_v10.apk"
+      };
 
-  // === 参数验证 ===
-  const uid = params.get("uid");
-  const zone = parseInt(params.get("zone") || "0");
-  const sig = params.get("sig");
+      const longURL = DOWNLOAD_MAP[version];
+      if (!longURL) throw new Error("未知版本号");
 
-  if (!uid || !sig || zone < 1 || zone > 5) {
-    return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
-  }
+      // === 智能标题（带日期 + UID）===
+      const now = new Date(Date.now() + 8 * 60 * 60 * 1000); // 马来西亚时间
+      const dateStr = now.toISOString().slice(0, 10);
+      const title = `下载版本 ${version}（${uid} · ${dateStr}）`;
 
-  // === 签名验证 ===
-  const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
-  if (!timingSafeCompare(expectedSig, sig)) {
-    return new Response("🚫 Invalid Signature", { status: 403 });
-  }
+      // === 调用 Short.io API 生成短链接 ===
+      const SHORTIO_DOMAIN = "appwt.short.gy";
+      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq";
 
-  // === 设备指纹 ===
-  const ua = request.headers.get("User-Agent") || "unknown";
-  const deviceFingerprint = await getDeviceFingerprint(ua, uid, SIGN_SECRET);
+      const id = `v${version}-${Math.floor(Math.random() * 9999)}`;
 
-  // === KV 检查 ===
-  if (typeof UID_BINDINGS === "undefined") {
-    return new Response("Service unavailable. (KV missing)", { status: 503 });
-  }
+      const shortRes = await fetch("https://api.short.io/links", {
+        method: "POST",
+        headers: {
+          Authorization: SHORTIO_SECRET_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          domain: SHORTIO_DOMAIN,
+          originalURL: longURL,
+          path: id,
+          title,
+        }),
+      });
 
-  const key = `uid:${uid}`;
-  let stored = null;
+      const shortData = await shortRes.json();
+      if (!shortRes.ok || !shortData.shortURL)
+        throw new Error(shortData.error || "短链接生成失败");
 
-  try {
-    stored = await UID_BINDINGS.get(key, "json");
-  } catch (e) {
-    return new Response("Service temporarily unavailable. (KV read error)", { status: 503 });
-  }
+      return new Response(JSON.stringify({
+        shortURL: shortData.shortURL,
+        title
+      }), { status: 200, headers: corsHeaders() });
 
-  // === 首次登入 → 新建记录 ===
-  if (!stored) {
-    const toStore = {
-      devices: [deviceFingerprint],
-      createdAt: new Date().toISOString()
-    };
-    await UID_BINDINGS.put(key, JSON.stringify(toStore));
-  } 
-  // === 已登入过 ===
-  else {
-    const devices = stored.devices || [];
-
-    if (devices.includes(deviceFingerprint)) {
-      // 已登记设备 → 允许访问
-    } 
-    else if (devices.length < MAX_DEVICES) {
-      // 新设备但未超过上限
-      devices.push(deviceFingerprint);
-      await UID_BINDINGS.put(key, JSON.stringify({ devices, updatedAt: new Date().toISOString() }));
-    } 
-    else {
-      // 🚫 超过3台 → 封锁
-      return Response.redirect(DEVICE_CONFLICT_URL, 302);
+    } catch (err) {
+      return new Response(JSON.stringify({ error: err.message }), {
+        status: 500,
+        headers: corsHeaders(),
+      });
     }
   }
+};
 
-  // === 跳转对应下载链接 ===
-  const targetURL = DOWNLOAD_LINKS[zone - 1];
-  return Response.redirect(targetURL, 302);
-}
-
-/** 🔑 HMAC 签名生成 (SHA-256) */
-async function sign(text, secret) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(signature))
-    .map(b => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/** ⏱ 时间安全比较 */
-function timingSafeCompare(aHex, bHex) {
-  if (aHex.length !== bHex.length) return false;
-  let diff = 0;
-  for (let i = 0; i < aHex.length; i++) diff |= aHex.charCodeAt(i) ^ bHex.charCodeAt(i);
-  return diff === 0;
-}
-
-/** 📱 设备指纹 */
-async function getDeviceFingerprint(ua, uid, secret) {
-  const cleanUA = ua.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
-  const base = `${uid}:${cleanUA}`;
-  return await sign(base, secret);
+// === 🌐 CORS 支持 ===
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Credentials": "true",
+    "Content-Type": "application/json",
+  };
 }
