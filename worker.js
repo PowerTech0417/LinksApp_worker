@@ -1,141 +1,99 @@
-export default {
-  async fetch(request, env, ctx) {
-    // ✅ CORS 处理
-    if (request.method === "OPTIONS") {
-      return new Response("", { headers: corsHeaders() });
-    }
+addEventListener("fetch", event => {
+  event.respondWith(handleRequest(event.request, event));
+});
 
-    if (request.method !== "POST") {
-      return new Response("Method Not Allowed", {
-        status: 405,
-        headers: corsHeaders(),
-      });
-    }
+async function handleRequest(request, event) {
+  const url = new URL(request.url);
+  const params = url.searchParams;
 
-    try {
-      // === 📦 读取请求体 ===
-      const body = await request.json();
-      const { longURL: providedLongURL, uid, version, redirect } = body;
+  // === ⚙️ 配置区 ===
+  const DOWNLOAD_LINKS = [
+    "https://modskyshop168-sudo.github.io/cc/app1.apk",
+    "https://modskyshop168-sudo.github.io/cc/app2.apk",
+    "https://modskyshop168-sudo.github.io/cc/app3.apk",
+    "https://modskyshop168-sudo.github.io/cc/app4.apk",
+    "https://modskyshop168-sudo.github.io/cc/app5.apk",
+    "https://modskyshop168-sudo.github.io/cc/app6.apk",
+    "https://modskyshop168-sudo.github.io/cc/app7.apk",
+    "https://modskyshop168-sudo.github.io/cc/app8.apk",
+    "https://modskyshop168-sudo.github.io/cc/app9.apk",
+    "https://modskyshop168-sudo.github.io/cc/app10.apk"
+  ];
+  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
+  const SIGN_SECRET = "mySuperSecretKey";
+  const MAX_DEVICES = 3; // ✅ 最多3台设备
+  // =================
 
-      if (!uid) throw new Error("Missing uid");
-      if (!version && !providedLongURL) throw new Error("Missing version or longURL");
+  const uid = params.get("uid");
+  const zone = parseInt(params.get("zone") || "0");
+  const sig = params.get("sig");
 
-      // ✅ 自动匹配下载链接（可修改为你自己的下载地址）
-      const versionMap = {
-        1: "https://example.com/download/v1.apk",
-        2: "https://example.com/download/v2.apk",
-        3: "https://example.com/download/v3.apk",
-        4: "https://example.com/download/v4.apk",
-        5: "https://example.com/download/v5.apk",
-        6: "https://example.com/download/v6.apk",
-        7: "https://example.com/download/v7.apk",
-        8: "https://example.com/download/v8.apk",
-        9: "https://example.com/download/v9.apk",
-        10: "https://example.com/download/v10.apk"
-      };
+  if (!uid || !sig || zone < 1 || zone > 10) {
+    return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
+  }
 
-      const longURL = providedLongURL || versionMap[version];
-      if (!longURL) throw new Error(`无效的版本号或缺少 longURL: ${version}`);
+  // === 签名验证 ===
+  const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
+  if (!timingSafeCompare(expectedSig, sig)) {
+    return new Response("🚫 Invalid Signature", { status: 403 });
+  }
 
-      // === 🧩 Short.io 配置 ===
-      const SHORTIO_DOMAIN = "appwt.short.gy"; // ✅ 你的短链接域名
-      const SHORTIO_SECRET_KEY = env.SHORTIO_SECRET_KEY || "sk_XivcX9OAHYNBX5oq"; // ✅ API Key
+  // === 设备指纹 ===
+  const ua = request.headers.get("User-Agent") || "unknown";
+  const deviceFingerprint = await getDeviceFingerprint(ua, uid, SIGN_SECRET);
 
-      // === 📱 从 UA 识别设备 / APP ===
-      const ua = request.headers.get("User-Agent") || "";
-      const appType = detectApp(ua);
+  // === KV 存储（需绑定 UID_BINDINGS）===
+  if (typeof UID_BINDINGS === "undefined") {
+    return new Response("Service unavailable. (KV missing)", { status: 503 });
+  }
 
-      // === 🧠 智能标题区（自动组合标题）===
-      let title = "📦 OTT 下载链接";
-      if (appType) title += ` · ${appType}`;
-      if (version) title += ` v${version}`;
+  const key = `uid:${uid}`;
+  let stored = null;
+  try {
+    stored = await UID_BINDINGS.get(key, "json");
+  } catch {
+    return new Response("Service temporarily unavailable. (KV read error)", { status: 503 });
+  }
 
-      // 🇲🇾 加入马来西亚日期
-      const malaysiaNow = new Date(Date.now() + 8 * 60 * 60 * 1000);
-      const dateMY = malaysiaNow.toISOString().slice(0, 10);
-      if (uid) title += ` (${uid} · ${dateMY})`;
-      else title += ` (${dateMY})`;
-
-      // === 🔁 自动生成唯一短链 ID ===
-      let id, shortData;
-      for (let i = 0; i < 5; i++) {
-        id = "id" + Math.floor(1000 + Math.random() * 90000);
-
-        const res = await fetch("https://api.short.io/links", {
-          method: "POST",
-          headers: {
-            Authorization: SHORTIO_SECRET_KEY,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            domain: SHORTIO_DOMAIN,
-            originalURL: longURL,
-            path: id,
-            title,
-          }),
-        });
-
-        const data = await res.json();
-
-        if (res.ok && data.shortURL) {
-          shortData = data;
-          break;
-        }
-
-        if (data.error && data.error.includes("already exists")) continue;
-        else throw new Error(data.error || "Short.io API Error");
+  if (!stored) {
+    const toStore = { devices: [deviceFingerprint], createdAt: new Date().toISOString() };
+    await UID_BINDINGS.put(key, JSON.stringify(toStore));
+  } else {
+    const devices = stored.devices || [];
+    if (!devices.includes(deviceFingerprint)) {
+      if (devices.length >= MAX_DEVICES) {
+        return Response.redirect(DEVICE_CONFLICT_URL, 302);
       }
-
-      if (!shortData) throw new Error("无法生成短链接，请稍后重试。");
-
-      // === 📺 redirect 模式（TV 设备跳转）===
-      if (redirect === true || redirect === "1") {
-        return Response.redirect(shortData.shortURL, 302);
-      }
-
-      // === 默认返回 JSON ===
-      return new Response(
-        JSON.stringify({
-          shortURL: shortData.shortURL,
-          title,
-          appType,
-          version,
-          longURL,
-          id,
-          createdAt: new Date().toISOString(),
-        }),
-        {
-          status: 200,
-          headers: corsHeaders(),
-        }
-      );
-    } catch (err) {
-      return new Response(JSON.stringify({ error: err.message }), {
-        status: 400,
-        headers: corsHeaders(),
-      });
+      devices.push(deviceFingerprint);
+      await UID_BINDINGS.put(key, JSON.stringify({ devices, updatedAt: new Date().toISOString() }));
     }
-  },
-};
+  }
 
-// === 🌐 CORS 支持 ===
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
-    "Access-Control-Allow-Credentials": "true",
-    "Content-Type": "application/json",
-  };
+  const targetURL = DOWNLOAD_LINKS[zone - 1];
+  return Response.redirect(targetURL, 302);
 }
 
-/** 📲 智能识别 OTT App 类型 */
-function detectApp(ua) {
-  const u = ua.toLowerCase();
-  if (u.includes("ott player")) return "OTT Player 🟢";
-  if (u.includes("ott tv")) return "OTT TV 🔵";
-  if (u.includes("ott navigator")) return "OTT Navigator 🟣";
-  if (u.includes("smart tv")) return "Smart TV";
-  if (u.includes("android")) return "Android 📱";
-  return "Unknown Device";
+/** 🔑 签名 */
+async function sign(text, secret) {
+  const key = await crypto.subtle.importKey(
+    "raw", new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** 安全比较 */
+function timingSafeCompare(aHex, bHex) {
+  if (aHex.length !== bHex.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aHex.length; i++) diff |= aHex.charCodeAt(i) ^ bHex.charCodeAt(i);
+  return diff === 0;
+}
+
+/** 设备指纹 */
+async function getDeviceFingerprint(ua, uid, secret) {
+  const cleanUA = ua.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
+  const base = `${uid}:${cleanUA}`;
+  return await sign(base, secret);
 }
