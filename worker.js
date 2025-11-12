@@ -6,22 +6,16 @@ async function handleRequest(request, event) {
   const url = new URL(request.url);
   const params = url.searchParams;
 
-  // === ⚙️ 配置区 ===
-  const DOWNLOAD_LINKS = [
-    "https://modskyshop168-sudo.github.io/cc/app1.apk",
-    "https://modskyshop168-sudo.github.io/cc/app2.apk",
-    "https://modskyshop168-sudo.github.io/cc/app3.apk",
-    "https://modskyshop168-sudo.github.io/cc/app4.apk",
-    "https://modskyshop168-sudo.github.io/cc/app5.apk",
-    "https://modskyshop168-sudo.github.io/cc/app6.apk",
-    "https://modskyshop168-sudo.github.io/cc/app7.apk",
-    "https://modskyshop168-sudo.github.io/cc/app8.apk",
-    "https://modskyshop168-sudo.github.io/cc/app9.apk",
-    "https://modskyshop168-sudo.github.io/cc/app10.apk"
-  ];
-  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
-  const SIGN_SECRET = "mySuperSecretKey";
-  const MAX_DEVICES = 3; // ✅ 最多3台设备
+// === ⚙️ 配置区 ===
+const GITHUB_JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
+const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
+const SIGN_SECRET = "mySuperSecretKey";
+const MAX_DEVICES = 3;
+// =================
+
+// 拉取 JSON 文件
+const json = await fetch(GITHUB_JSON_URL).then(r => r.json());
+const DOWNLOAD_LINKS = json.downloads.map(d => d.url);  
   // =================
 
   const uid = params.get("uid");
