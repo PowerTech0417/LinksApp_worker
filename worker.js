@@ -34,7 +34,7 @@ async function handleRequest(request) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成设备指纹（平衡版，不依赖 IP、浏览器） ===
+  // === 2️⃣ 生成设备指纹（改进版本） ===
   const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
   // === 3️⃣ 检查 KV 存储 ===
@@ -130,20 +130,20 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 平衡版设备指纹（稳定识别同一设备） === */
+/* === 📱 改进型设备指纹：换浏览器不重复 === */
 async function getDeviceFingerprint(request, uid, secret) {
   const ua = request.headers.get("User-Agent") || "";
   const acceptLang = request.headers.get("Accept-Language") || "";
   const dnt = request.headers.get("DNT") || "";
-  const encoding = request.headers.get("Accept-Encoding") || "";
 
-  // ✅ 去除浏览器版本号差异，仅保留设备系统标识
-  const simplifiedUA = ua
-    .replace(/Chrome\/[\d.]+|Version\/[\d.]+|Safari\/[\d.]+|Mobile\/[\w.]+/gi, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // ✅ 识别设备核心信息（系统层级）
+  const match = ua.match(/Android\s[\d.]+|iPhone|iPad|SmartTV|AFT|Mi|Hisense|Sony|Linux|Windows/i);
+  const deviceInfo = match ? match[0] : "unknown";
 
-  // ✅ 保留设备层级稳定信息，不依赖 IP
-  const raw = `${uid}:${simplifiedUA}:${acceptLang}:${dnt}:${encoding}`;
+  // ✅ 去掉浏览器差异部分
+  const simplifiedUA = ua.replace(/(Chrome|Version|Safari|Mobile|wv)\/[\d.]+/gi, "").trim();
+
+  // ✅ 构造更稳定的指纹
+  const raw = `${uid}:${deviceInfo}:${simplifiedUA}:${acceptLang}:${dnt}`;
   return await sign(raw.toLowerCase(), secret);
 }
