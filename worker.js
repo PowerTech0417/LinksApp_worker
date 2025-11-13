@@ -34,39 +34,42 @@ async function handleRequest(request) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 获取设备指纹 ===
-  const ua = request.headers.get("User-Agent") || "unknown";
-  const deviceFingerprint = await getDeviceFingerprint(ua, uid, SIGN_SECRET);
+  // === 2️⃣ 生成设备指纹（独立于IP） ===
+  const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
-  // === 3️⃣ 检查设备绑定 KV ===
+  // === 3️⃣ 检查 KV 存储 ===
   if (typeof UID_BINDINGS === "undefined") {
     return new Response("🚨 UID_BINDINGS KV not found.", { status: 503 });
   }
 
   const key = `uid:${uid}`;
   let stored = await UID_BINDINGS.get(key, "json").catch(() => null);
+  const now = Date.now();
 
-  if (!stored) {
-    stored = { devices: [deviceFingerprint], createdAt: new Date().toISOString() };
-    await UID_BINDINGS.put(key, JSON.stringify(stored));
+  if (!stored) stored = { devices: [] };
+
+  // 检查当前设备是否已存在
+  const existing = stored.devices.find(d => d.fp === deviceFingerprint);
+  if (existing) {
+    existing.lastUsed = now;
   } else {
-    const devices = stored.devices || [];
-    if (!devices.includes(deviceFingerprint)) {
-      if (devices.length >= MAX_DEVICES) {
-        return Response.redirect(DEVICE_CONFLICT_URL, 302);
-      }
-      devices.push(deviceFingerprint);
-      await UID_BINDINGS.put(key, JSON.stringify({ devices, updatedAt: new Date().toISOString() }));
+    // 超过最大数量则跳转封锁页
+    if (stored.devices.length >= MAX_DEVICES) {
+      return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
+    stored.devices.push({ fp: deviceFingerprint, lastUsed: now });
   }
 
-  // === 4️⃣ 从 GitHub JSON 自动读取下载链接 ===
+  // 永久保存（不清理、不覆盖）
+  await UID_BINDINGS.put(key, JSON.stringify(stored));
+
+  // === 4️⃣ 加载下载配置 JSON ===
   let downloads;
   try {
     const res = await fetch(JSON_URL, { cache: "no-store" });
     const json = await res.json();
     downloads = json.downloads || [];
-  } catch (e) {
+  } catch {
     return new Response("🚫 无法加载下载配置文件", { status: 500 });
   }
 
@@ -75,7 +78,7 @@ async function handleRequest(request) {
     return new Response(`🚫 未找到 Zone ${zone} 的下载链接`, { status: 404 });
   }
 
-  // === 5️⃣ 隐藏真实下载源 ===
+  // === 5️⃣ 跳转隐藏下载源 ===
   const redirectTo = `https://${url.hostname}/dl/${zone}`;
   return Response.redirect(redirectTo, 302);
 }
@@ -95,7 +98,7 @@ async function handleHiddenDownload(zoneId) {
     const fileRes = await fetch(app.url);
     const headers = new Headers(fileRes.headers);
 
-    const safeName = app.name ? encodeURIComponent(app.name) : "App";
+    const safeName = encodeURIComponent(app.name || "App");
     headers.set(
       "Content-Disposition",
       `attachment; filename="${safeName}.apk"; filename*=UTF-8''${safeName}.apk`
@@ -108,7 +111,7 @@ async function handleHiddenDownload(zoneId) {
   }
 }
 
-/* === 🔑 签名函数 === */
+/* === 🔑 HMAC 签名 === */
 async function sign(text, secret) {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret),
@@ -127,9 +130,13 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 设备指纹 === */
-async function getDeviceFingerprint(ua, uid, secret) {
-  const cleanUA = ua.toLowerCase().replace(/\s+/g, " ").trim().slice(0, 120);
-  const base = `${uid}:${cleanUA}`;
-  return await sign(base, secret);
+/* === 📱 稳定设备指纹 === */
+async function getDeviceFingerprint(request, uid, secret) {
+  const ua = request.headers.get("User-Agent") || "";
+  const accept = request.headers.get("Accept") || "";
+  const lang = request.headers.get("Accept-Language") || "";
+
+  // ✅ 不包含 IP（换网不受影响）
+  const raw = `${uid}:${ua}:${accept}:${lang}`;
+  return await sign(raw.toLowerCase(), secret);
 }
