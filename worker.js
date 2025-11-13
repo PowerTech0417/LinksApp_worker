@@ -5,7 +5,7 @@ addEventListener("fetch", event => {
 async function handleRequest(request) {
   const url = new URL(request.url);
 
-  // === 📥 隐藏下载中转 ===
+  // === 📥 下载中转 ===
   if (url.pathname.startsWith("/dl/")) {
     const zoneId = url.pathname.split("/dl/")[1];
     return handleHiddenDownload(zoneId);
@@ -13,33 +13,31 @@ async function handleRequest(request) {
 
   const params = url.searchParams;
 
-  // === ⚙️ 配置 ===
+  // === ⚙️ 配置区 ===
   const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
   const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/not-found.html";
   const SIGN_SECRET = "mySuperSecretKey";
   const MAX_DEVICES = 3;
+  // =================
 
   const uid = params.get("uid");
   const zone = parseInt(params.get("zone") || "0");
   const sig = params.get("sig");
-  const imei = params.get("imei") || params.get("device_id") || null;
 
   if (!uid || !sig || zone < 1) {
     return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
   }
 
-  // === 1️⃣ 签名验证 ===
+  // === 1️⃣ 验证签名 ===
   const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
   if (!timingSafeCompare(expectedSig, sig)) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成稳定设备指纹 ===
-  const deviceFingerprint = imei
-    ? await sign(`imei:${imei}`, SIGN_SECRET)
-    : await getStableFingerprint(request, uid, SIGN_SECRET);
+  // === 2️⃣ 生成设备指纹（平衡版，不依赖 IP、浏览器） ===
+  const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
-  // === 3️⃣ 检查 KV ===
+  // === 3️⃣ 检查 KV 存储 ===
   if (typeof UID_BINDINGS === "undefined") {
     return new Response("🚨 UID_BINDINGS KV not found.", { status: 503 });
   }
@@ -47,21 +45,25 @@ async function handleRequest(request) {
   const key = `uid:${uid}`;
   let stored = await UID_BINDINGS.get(key, "json").catch(() => null);
   const now = Date.now();
+
   if (!stored) stored = { devices: [] };
 
+  // 检查当前设备是否已存在
   const existing = stored.devices.find(d => d.fp === deviceFingerprint);
   if (existing) {
     existing.lastUsed = now;
   } else {
+    // 超过最大数量则跳转封锁页
     if (stored.devices.length >= MAX_DEVICES) {
       return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
     stored.devices.push({ fp: deviceFingerprint, lastUsed: now });
   }
 
+  // 永久保存（不清理、不覆盖）
   await UID_BINDINGS.put(key, JSON.stringify(stored));
 
-  // === 4️⃣ 加载 JSON ===
+  // === 4️⃣ 加载下载配置 JSON ===
   let downloads;
   try {
     const res = await fetch(JSON_URL, { cache: "no-store" });
@@ -76,12 +78,12 @@ async function handleRequest(request) {
     return new Response(`🚫 未找到 Zone ${zone} 的下载链接`, { status: 404 });
   }
 
-  // === 5️⃣ 跳转隐藏源 ===
+  // === 5️⃣ 跳转隐藏下载源 ===
   const redirectTo = `https://${url.hostname}/dl/${zone}`;
   return Response.redirect(redirectTo, 302);
 }
 
-/* === 📦 隐藏下载中转 === */
+/* === 🔒 隐藏下载中转（支持中文文件名） === */
 async function handleHiddenDownload(zoneId) {
   try {
     const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
@@ -92,6 +94,7 @@ async function handleHiddenDownload(zoneId) {
     const app = apps.find(x => String(x.zone) === String(zoneId));
     if (!app) return new Response("Not Found", { status: 404 });
 
+    // 📦 隐藏真实源并自动命名（支持中文 UTF-8）
     const fileRes = await fetch(app.url);
     const headers = new Headers(fileRes.headers);
 
@@ -108,7 +111,7 @@ async function handleHiddenDownload(zoneId) {
   }
 }
 
-/* === 🔑 HMAC === */
+/* === 🔑 HMAC 签名 === */
 async function sign(text, secret) {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret),
@@ -127,17 +130,20 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 稳定设备指纹算法（改良版） === */
-async function getStableFingerprint(request, uid, secret) {
-  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
-  const lang = (request.headers.get("Accept-Language") || "").toLowerCase();
+/* === 📱 平衡版设备指纹（稳定识别同一设备） === */
+async function getDeviceFingerprint(request, uid, secret) {
+  const ua = request.headers.get("User-Agent") || "";
+  const acceptLang = request.headers.get("Accept-Language") || "";
+  const dnt = request.headers.get("DNT") || "";
+  const encoding = request.headers.get("Accept-Encoding") || "";
 
-  // 提取 Android 版本 & 型号
-  const match = ua.match(/android\s([\d\.]+);\s*([^;]+)\s*build/i);
-  const androidVersion = match ? match[1] : "unknown";
-  const model = match ? match[2].replace(/[^\w\-]/g, "") : "unknown";
+  // ✅ 去除浏览器版本号差异，仅保留设备系统标识
+  const simplifiedUA = ua
+    .replace(/Chrome\/[\d.]+|Version\/[\d.]+|Safari\/[\d.]+|Mobile\/[\w.]+/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  // 构造稳定信息（忽略浏览器差异）
-  const stablePart = `${uid}:${model}:${androidVersion}:${lang}`;
-  return await sign(stablePart, secret);
+  // ✅ 保留设备层级稳定信息，不依赖 IP
+  const raw = `${uid}:${simplifiedUA}:${acceptLang}:${dnt}:${encoding}`;
+  return await sign(raw.toLowerCase(), secret);
 }
