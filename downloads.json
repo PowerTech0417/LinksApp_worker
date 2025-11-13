@@ -29,6 +29,26 @@
       "zone": 6,
       "name": "HD Movie TV",
       "url": "https://github.com/powertech6535/Get/releases/download/m/HD.Movie.TV.Premium.apk"
+    },
+        {
+      "zone": 7,
+      "name": "影视TV版V4",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/Baohe_TV_4.4_v7.apk"
+    },
+    {
+      "zone": 8,
+      "name": "影视手机版V7",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/PH_YS_v7.apk"
+    },
+    {
+      "zone": 9,
+      "name": "猫TV会员版",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/NCatTV-Ver.1.1.0.apk"
+    },
+    {
+      "zone": 10,
+      "name": "一影视TV",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/TV_1video-2.2.0.apk"
     }
   ]
 }
