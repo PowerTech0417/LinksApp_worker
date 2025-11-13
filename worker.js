@@ -34,7 +34,7 @@ async function handleRequest(request) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成设备指纹（宽松版） ===
+  // === 2️⃣ 生成设备指纹（改进版） ===
   const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
   // === 3️⃣ 检查 KV 存储 ===
@@ -80,7 +80,7 @@ async function handleRequest(request) {
   return Response.redirect(redirectTo, 302);
 }
 
-/* === 📦 隐藏下载区 === */
+/* === 📦 隐藏下载中转 === */
 async function handleHiddenDownload(zoneId) {
   try {
     const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
@@ -126,21 +126,34 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 设备指纹算法（宽松绑定版） ===
-   ✅ 同设备 → 无论换浏览器 / 网络 / 系统版本，都算同一台
-   ❌ 只有换了设备型号才算新设备
+/* === 📱 改进版设备指纹算法 ===
+   ✅ 同设备 → 任意浏览器 / 网络 / 系统版本都算同一台
+   🔒 核心依据：设备型号 + 屏幕信息（UA中提取）
 */
 async function getDeviceFingerprint(request, uid, secret) {
   const ua = (request.headers.get("User-Agent") || "").toLowerCase();
 
-  // 🧠 只提取设备型号关键词（忽略系统、浏览器、网络）
-  const deviceHint = ua
-    .replace(/android [\d.]+|iphone os [\d_]+|tv|aft|mi|chrome\/[\d.]+|safari\/[\d.]+|edg\/[\d.]+|firefox\/[\d.]+/g, "")
-    .replace(/\([^)]*\)/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  // 提取主要设备信息
+  let deviceModel = "unknown-device";
 
-  const modelHashInput = `${uid}:${deviceHint}`;
+  // 常见 Android / TV UA 中的设备型号匹配
+  const match = ua.match(/; ([^;]*build\/[^;)]+)/i);
+  if (match && match[1]) {
+    deviceModel = match[1].replace(/build.*/i, "").trim();
+  } else if (ua.includes("iphone")) {
+    deviceModel = "iphone";
+  } else if (ua.includes("ipad")) {
+    deviceModel = "ipad";
+  } else if (ua.includes("miui") || ua.includes("redmi") || ua.includes("xiaomi")) {
+    deviceModel = "xiaomi";
+  } else if (ua.includes("huawei")) {
+    deviceModel = "huawei";
+  } else if (ua.includes("samsung")) {
+    deviceModel = "samsung";
+  } else if (ua.includes("tv") || ua.includes("aft")) {
+    deviceModel = "android-tv";
+  }
 
+  const modelHashInput = `${uid}:${deviceModel}`;
   return await sign(modelHashInput, secret);
 }
