@@ -34,7 +34,7 @@ async function handleRequest(request) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 改进版设备指纹 ===
+  // === 2️⃣ 生成设备指纹（宽松版） ===
   const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
   // === 3️⃣ 检查 KV 存储 ===
@@ -48,22 +48,19 @@ async function handleRequest(request) {
 
   if (!stored) stored = { devices: [] };
 
-  // 检查当前设备是否已存在
   const existing = stored.devices.find(d => d.fp === deviceFingerprint);
   if (existing) {
     existing.lastUsed = now;
   } else {
-    // 超过最大数量则跳转封锁页
     if (stored.devices.length >= MAX_DEVICES) {
       return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
     stored.devices.push({ fp: deviceFingerprint, lastUsed: now });
   }
 
-  // 永久保存（不清理、不覆盖）
   await UID_BINDINGS.put(key, JSON.stringify(stored));
 
-  // === 4️⃣ 加载下载配置 JSON ===
+  // === 4️⃣ 加载下载配置 ===
   let downloads;
   try {
     const res = await fetch(JSON_URL, { cache: "no-store" });
@@ -78,12 +75,12 @@ async function handleRequest(request) {
     return new Response(`🚫 未找到 Zone ${zone} 的下载链接`, { status: 404 });
   }
 
-  // === 5️⃣ 跳转隐藏下载源 ===
+  // === 5️⃣ 跳转隐藏下载 ===
   const redirectTo = `https://${url.hostname}/dl/${zone}`;
   return Response.redirect(redirectTo, 302);
 }
 
-/* === 🔒 隐藏下载中转（支持中文文件名） === */
+/* === 📦 隐藏下载区 === */
 async function handleHiddenDownload(zoneId) {
   try {
     const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
@@ -94,11 +91,10 @@ async function handleHiddenDownload(zoneId) {
     const app = apps.find(x => String(x.zone) === String(zoneId));
     if (!app) return new Response("Not Found", { status: 404 });
 
-    // 📦 隐藏真实源并自动命名（支持中文 UTF-8）
     const fileRes = await fetch(app.url);
     const headers = new Headers(fileRes.headers);
-
     const safeName = encodeURIComponent(app.name || "App");
+
     headers.set(
       "Content-Disposition",
       `attachment; filename="${safeName}.apk"; filename*=UTF-8''${safeName}.apk`
@@ -130,27 +126,21 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 改进版设备指纹：同设备不同浏览器 → 同一结果 === */
+/* === 📱 设备指纹算法（宽松绑定版） ===
+   ✅ 同设备 → 无论换浏览器 / 网络 / 系统版本，都算同一台
+   ❌ 只有换了设备型号才算新设备
+*/
 async function getDeviceFingerprint(request, uid, secret) {
-  const ua = request.headers.get("User-Agent") || "";
-  const accept = request.headers.get("Accept") || "";
-  const lang = request.headers.get("Accept-Language") || "";
+  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
 
-  // 🔧 去除浏览器差异部分，保留设备与系统特征
-  const simplifiedUA = ua
-    .replace(/Chrome\/[\d.]+/g, "")
-    .replace(/CriOS\/[\d.]+/g, "")
-    .replace(/Version\/[\d.]+/g, "")
-    .replace(/Mobile\/[\w]+/g, "")
-    .replace(/Safari\/[\d.]+/g, "")
-    .replace(/wv/g, "")
-    .replace(/\([^)]*\)/g, "") // 删除括号内系统版本号
-    .replace(/[^A-Za-z0-9]/g, "")
-    .toLowerCase();
+  // 🧠 只提取设备型号关键词（忽略系统、浏览器、网络）
+  const deviceHint = ua
+    .replace(/android [\d.]+|iphone os [\d_]+|tv|aft|mi|chrome\/[\d.]+|safari\/[\d.]+|edg\/[\d.]+|firefox\/[\d.]+/g, "")
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 
-  // ✅ 保留关键信息，不依赖 IP，不含随机 Header
-  const raw = `${uid}:${simplifiedUA}:${lang}:${accept}`;
+  const modelHashInput = `${uid}:${deviceHint}`;
 
-  // 同一设备、不同浏览器 → 结果一致
-  return await sign(raw, secret);
+  return await sign(modelHashInput, secret);
 }
