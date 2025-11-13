@@ -2,55 +2,55 @@
   "downloads": [
     {
       "zone": 1,
-      "name": "App 版本 1",
+      "name": "影视TV版",
       "url": "https://github.com/watchpps/PW_Digital/releases/download/Ph/onstream-android.apk"
     },
     {
       "zone": 2,
-      "name": "你的重要",
+      "name": "影视手机版",
       "url": "https://life4u22.blogspot.com/2022/08/mv_29.html"
     },
     {
       "zone": 3,
-      "name": "App 版本 3",
+      "name": "OnStream TV",
       "url": "https://modskyshop168-sudo.github.io/cc/app3.apk"
     },
     {
       "zone": 4,
-      "name": "App 版本 4",
+      "name": "MovieBox Premium",
       "url": "https://modskyshop168-sudo.github.io/cc/app4.apk"
     },
     {
       "zone": 5,
-      "name": "App 版本 5",
+      "name": "YouTube TV Premium",
       "url": "https://modskyshop168-sudo.github.io/cc/app5.apk"
     },
-    {
+    //{
       "zone": 6,
-      "name": "App 版本 6",
+      "name": "App",
       "url": "https://modskyshop168-sudo.github.io/cc/app6.apk"
     },
-    {
+    //{
       "zone": 7,
       "name": "App 版本 7",
       "url": "https://modskyshop168-sudo.github.io/cc/app7.apk"
     },
-    {
+   // {
       "zone": 8,
       "name": "App 版本 8",
       "url": "https://modskyshop168-sudo.github.io/cc/app8.apk"
     },
-    {
+   // {
       "zone": 9,
       "name": "App 版本 9",
       "url": "https://modskyshop168-sudo.github.io/cc/app9.apk"
     },
-    {
+   // {
       "zone": 10,
       "name": "App 版本 10",
       "url": "https://modskyshop168-sudo.github.io/cc/app10.apk"
     },
-        {
+     //   {
       "zone": 11,
       "name": "App 版本 11",
       "url": "https://modskyshop168-sudo.github.io/cc/app10.apk"
