@@ -130,13 +130,25 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 稳定设备指纹 === */
+/* === 📱 改进版：稳定设备指纹 === */
 async function getDeviceFingerprint(request, uid, secret) {
-  const ua = request.headers.get("User-Agent") || "";
-  const accept = request.headers.get("Accept") || "";
-  const lang = request.headers.get("Accept-Language") || "";
+  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
+  const lang = (request.headers.get("Accept-Language") || "").toLowerCase();
 
-  // ✅ 不包含 IP（换网不受影响）
-  const raw = `${uid}:${ua}:${accept}:${lang}`;
-  return await sign(raw.toLowerCase(), secret);
+  // 去除 UA 中与浏览器差异相关的部分，只保留系统与型号
+  const simplifiedUA = ua
+    .replace(/chrome\/[\d.]+/g, "")
+    .replace(/version\/[\d.]+/g, "")
+    .replace(/safari\/[\d.]+/g, "")
+    .replace(/mobile/g, "")
+    .replace(/wv/g, "") // 移除 WebView 标识
+    .trim();
+
+  // 提取设备信息（Android版本、型号或TV标识）
+  const baseMatch = simplifiedUA.match(/android [^;]+|aft|mitv|smarttv|firetv|googletv|tv/i);
+  const base = baseMatch ? baseMatch[0] : simplifiedUA;
+
+  // 构造唯一指纹
+  const raw = `${uid}:${base}:${lang}`;
+  return await sign(raw, secret);
 }
