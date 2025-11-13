@@ -1,5 +1,5 @@
 {
-  "name": "app",
+  "name": "powertech",
   "main": "worker.js",
   "compatibility_date": "2025-11-13",
   "kv_namespaces": [
