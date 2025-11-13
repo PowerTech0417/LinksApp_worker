@@ -80,7 +80,7 @@ async function handleRequest(request) {
   return Response.redirect(redirectTo, 302);
 }
 
-/* === 🔒 隐藏下载中转 === */
+/* === 🔒 隐藏下载中转（支持中文文件名） === */
 async function handleHiddenDownload(zoneId) {
   try {
     const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
@@ -91,12 +91,14 @@ async function handleHiddenDownload(zoneId) {
     const app = apps.find(x => String(x.zone) === String(zoneId));
     if (!app) return new Response("Not Found", { status: 404 });
 
-    // 📦 隐藏真实源并自动命名
+    // 📦 隐藏真实源并自动命名（支持中文 UTF-8）
     const fileRes = await fetch(app.url);
     const headers = new Headers(fileRes.headers);
+
+    const safeName = app.name ? encodeURIComponent(app.name) : "App";
     headers.set(
       "Content-Disposition",
-      `attachment; filename="${(app.name || "App").replace(/[^a-zA-Z0-9_\-]/g, "_")}.apk"`
+      `attachment; filename="${safeName}.apk"; filename*=UTF-8''${safeName}.apk`
     );
     headers.set("Cache-Control", "no-store");
 
