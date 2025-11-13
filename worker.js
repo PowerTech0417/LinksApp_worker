@@ -64,31 +64,42 @@ async function sign(data, secret) {
 
 // === 📱 改进版设备指纹算法 ===
 // 目标：同设备换浏览器、换网络仍算同一设备
+/* === 📱 改进版设备指纹（同设备换浏览器 / 换网络 不再重复） === */
 async function getDeviceFingerprint(request, uid, secret) {
   const ua = (request.headers.get("User-Agent") || "").toLowerCase();
   const lang = (request.headers.get("Accept-Language") || "").toLowerCase();
+  const accept = (request.headers.get("Accept") || "").toLowerCase();
 
-  // 清理浏览器标识，保留设备+系统核心信息
+  // ✅ 核心：去除浏览器/内核标识，只保留设备+系统特征
   let cleanedUA = ua
+    // 删除常见浏览器标识
     .replace(/chrome\/[\d.]+/g, "")
-    .replace(/safari\/[\d.]+/g, "")
-    .replace(/wv/g, "")
+    .replace(/crios\/[\d.]+/g, "")
     .replace(/version\/[\d.]+/g, "")
+    .replace(/wv/g, "")
     .replace(/applewebkit\/[\d.]+/g, "")
+    .replace(/safari\/[\d.]+/g, "")
     .replace(/mobile/g, "")
-    .replace(/; \)/g, ")")
+    .replace(/\s+/g, " ")
     .trim();
 
-  // Android 系统版本
-  const androidVersion = (cleanedUA.match(/android\s*([\d.]+)/) || [])[1] || "unknown";
+  // ✅ 提取系统版本
+  const androidVersion = (cleanedUA.match(/android\s*([\d._]+)/) || [])[1] || "android-unknown";
 
-  // 设备型号
+  // ✅ 提取设备型号
   const modelMatch = cleanedUA.match(/; ([^;]*?build)/i);
   const model = modelMatch ? modelMatch[1].replace(/build.*/i, "").trim() : "unknown-device";
 
-  // 判断是否 TV
+  // ✅ 判断 TV / 手机
   const isTV = /tv|mitv|aft|smarttv|googletv|firetv/i.test(cleanedUA);
+  const deviceType = isTV ? "TV" : "Mobile";
 
+  // ✅ 生成稳定基因，不依赖浏览器差异
+  const baseString = `${uid}:${deviceType}:${androidVersion}:${model}:${lang}:${accept}`;
+
+  // 使用 HMAC-SHA256 生成稳定哈希
+  return await sign(baseString, secret);
+}
   // 生成统一设备签名
   const baseID = `${uid}:${isTV ? "TV" : "Mobile"}:${androidVersion}:${model}:${lang}`;
   return await sign(baseID, secret);
