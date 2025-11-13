@@ -1,7 +1,7 @@
 {
-  "name": "pwapp",
+  "name": "pwappwt",
   "main": "worker.js",
-  "compatibility_date": "2025-11-08",
+  "compatibility_date": "2025-11-13",
   "kv_namespaces": [
     {
       "binding": "UID_BINDINGS",
