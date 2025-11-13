@@ -2,7 +2,7 @@ addEventListener("fetch", event => {
   event.respondWith(handleEventSafe(event));
 });
 
-/* === 🛡 安全封装：捕获任何异常，防止 Error 1101 === */
+/* === 🛡 安全封装：防止 Error 1101 === */
 async function handleEventSafe(event) {
   try {
     return await handleRequest(event.request, event);
@@ -42,8 +42,13 @@ async function handleRequest(request, event) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成设备指纹（稳定算法）===
-  const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
+  // === 2️⃣ 平台识别 + 生成稳定设备指纹 ===
+  const platformCheck = detectPlatform(request.headers.get("User-Agent") || "");
+  if (!platformCheck.allowed) {
+    // ❌ 非允许平台 → 封锁页
+    return Response.redirect(DEVICE_CONFLICT_URL, 302);
+  }
+  const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET, platformCheck.platform);
 
   // === 3️⃣ 检查 KV 存储 ===
   const kv = event.env?.UID_BINDINGS || globalThis.UID_BINDINGS;
@@ -54,12 +59,7 @@ async function handleRequest(request, event) {
   }
 
   const key = `uid:${uid}`;
-  let stored = null;
-  try {
-    stored = await kv.get(key, "json");
-  } catch {
-    stored = null;
-  }
+  let stored = await kv.get(key, "json").catch(() => null);
   if (!stored) stored = { devices: [] };
 
   const now = Date.now();
@@ -93,6 +93,36 @@ async function handleRequest(request, event) {
   // === 5️⃣ 跳转隐藏下载源 ===
   const redirectTo = `https://${url.hostname}/dl/${zone}`;
   return Response.redirect(redirectTo, 302);
+}
+
+/* === 🔍 平台识别（仅允许 Android / Windows）=== */
+function detectPlatform(ua) {
+  const uaLower = ua.toLowerCase();
+  const isAndroid = uaLower.includes("android");
+  const isWindows = uaLower.includes("windows nt");
+  const isTV =
+    uaLower.includes("aft") ||
+    uaLower.includes("downloader") ||
+    uaLower.includes("tv") ||
+    uaLower.includes("googletv") ||
+    uaLower.includes("tvbox") ||
+    uaLower.includes("stick");
+
+  // ❌ 禁止 iOS / macOS
+  if (uaLower.includes("iphone") || uaLower.includes("ipad") || uaLower.includes("macintosh")) {
+    return { allowed: false, platform: "Apple" };
+  }
+
+  if (isAndroid) {
+    return { allowed: true, platform: isTV ? "Android-TV" : "Android" };
+  }
+
+  if (isWindows) {
+    return { allowed: true, platform: "Windows" };
+  }
+
+  // 默认不允许
+  return { allowed: false, platform: "Unknown" };
 }
 
 /* === 🔒 隐藏下载中转 === */
@@ -145,16 +175,17 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 稳定设备指纹（不受IP、系统升级、浏览器影响）=== */
-async function getDeviceFingerprint(request, uid, secret) {
+/* === 📱 稳定设备指纹（换网/换浏览器仍算同设备）=== */
+async function getDeviceFingerprint(request, uid, secret, platform) {
   const ua = request.headers.get("User-Agent") || "";
   const lang = request.headers.get("Accept-Language") || "";
 
-  // 核心思想：保留设备硬特征（型号、架构、平台）
-  // 去除浏览器差异、网络差异，保持跨浏览器/换网仍算同设备
-  const coreMatch = ua.replace(/\s?(Chrome|Safari|Edge|Firefox|UCBrowser|Version)\/[^\s]+/gi, "");
-  const cleanUA = coreMatch.replace(/;?\s+(wv|Mobile|Build\/[^\s)]+)/gi, "").trim();
+  // 去除浏览器差异（Chrome/Safari/Edge 等）
+  const baseUA = ua
+    .replace(/\s?(Chrome|Safari|Edge|Firefox|UCBrowser|Version)\/[^\s]+/gi, "")
+    .replace(/;?\s+(wv|Mobile|Build\/[^\s)]+)/gi, "")
+    .trim();
 
-  const raw = `${uid}:${cleanUA}:${lang}`;
+  const raw = `${uid}:${platform}:${baseUA}:${lang}`;
   return await sign(raw.toLowerCase(), secret);
 }
