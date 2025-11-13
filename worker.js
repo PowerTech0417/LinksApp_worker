@@ -1,115 +1,143 @@
-// === ⚙️ Cloudflare Worker：限制每 UID 同时登录 ≤ 3 台设备 ===
-// ✅ 改进版：同设备换浏览器 / 网络 不再重复计算
-// ✅ 保持原逻辑完全不变
+addEventListener("fetch", event => {
+  event.respondWith(handleRequest(event.request));
+});
 
-import { HmacSHA256, enc } from "crypto-js";
+async function handleRequest(request) {
+  const url = new URL(request.url);
 
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
+  // === 📥 隐藏下载中转 ===
+  if (url.pathname.startsWith("/dl/")) {
+    const zoneId = url.pathname.split("/dl/")[1];
+    return handleHiddenDownload(zoneId);
+  }
 
-    // === 📦 下载中转 ===
-    if (url.pathname.startsWith("/dl/")) {
-      const uid = url.searchParams.get("uid");
-      const file = url.pathname.replace("/dl/", "").trim();
-      if (!uid || !file) return new Response("Invalid Link", { status: 400 });
+  const params = url.searchParams;
 
-      const deviceId = await getDeviceFingerprint(request, uid, env.SECRET_KEY);
-      const kvKey = `uid:${uid}`;
+  // === ⚙️ 配置 ===
+  const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
+  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/not-found.html";
+  const SIGN_SECRET = "mySuperSecretKey";
+  const MAX_DEVICES = 3;
 
-      const data = (await env.UID_DEVICES.get(kvKey, "json")) || { devices: [] };
+  const uid = params.get("uid");
+  const zone = parseInt(params.get("zone") || "0");
+  const sig = params.get("sig");
+  const imei = params.get("imei") || params.get("device_id") || null; // ✅ 可选IMEI字段支持
 
-      // === 检查是否已有该设备 ===
-      const exists = data.devices.find((d) => d.id === deviceId);
+  if (!uid || !sig || zone < 1) {
+    return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
+  }
 
-      if (!exists) {
-        // 新设备 → 添加
-        if (data.devices.length >= 3) {
-          return new Response(
-            "⚠️ 已超过3台设备使用限制，此下载链接已失效。",
-            { status: 403 }
-          );
-        }
-        data.devices.push({ id: deviceId, ts: Date.now() });
-        await env.UID_DEVICES.put(kvKey, JSON.stringify(data)); // 永久保存
-      }
+  // === 1️⃣ 验证签名 ===
+  const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
+  if (!timingSafeCompare(expectedSig, sig)) {
+    return new Response("🚫 Invalid Signature", { status: 403 });
+  }
 
-      // === 🔗 转发下载 ===
-      const redirectURL = await getDownloadURL(file, env);
-      return Response.redirect(redirectURL, 302);
+  // === 2️⃣ 生成设备指纹（优先 IMEI / 否则回退 UA 指纹） ===
+  const deviceFingerprint = imei
+    ? await sign(`imei:${imei}`, SIGN_SECRET) // ✅ 优先IMEI
+    : await getDeviceFingerprint(request, uid, SIGN_SECRET); // ✅ 否则自动生成稳定指纹
+
+  // === 3️⃣ 检查 KV 存储 ===
+  if (typeof UID_BINDINGS === "undefined") {
+    return new Response("🚨 UID_BINDINGS KV not found.", { status: 503 });
+  }
+
+  const key = `uid:${uid}`;
+  let stored = await UID_BINDINGS.get(key, "json").catch(() => null);
+  const now = Date.now();
+  if (!stored) stored = { devices: [] };
+
+  // 查找是否已存在设备
+  const existing = stored.devices.find(d => d.fp === deviceFingerprint);
+  if (existing) {
+    existing.lastUsed = now;
+  } else {
+    if (stored.devices.length >= MAX_DEVICES) {
+      return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
+    stored.devices.push({ fp: deviceFingerprint, lastUsed: now });
+  }
 
-    return new Response("OK");
-  },
-};
+  // 永久保存
+  await UID_BINDINGS.put(key, JSON.stringify(stored));
 
-// === 🔒 签名函数 ===
-async function sign(data, secret) {
+  // === 4️⃣ 加载下载配置 JSON ===
+  let downloads;
+  try {
+    const res = await fetch(JSON_URL, { cache: "no-store" });
+    const json = await res.json();
+    downloads = json.downloads || [];
+  } catch {
+    return new Response("🚫 无法加载下载配置文件", { status: 500 });
+  }
+
+  const target = downloads.find(d => String(d.zone) === String(zone));
+  if (!target || !target.url) {
+    return new Response(`🚫 未找到 Zone ${zone} 的下载链接`, { status: 404 });
+  }
+
+  // === 5️⃣ 跳转隐藏下载源 ===
+  const redirectTo = `https://${url.hostname}/dl/${zone}`;
+  return Response.redirect(redirectTo, 302);
+}
+
+/* === 📦 隐藏下载中转 === */
+async function handleHiddenDownload(zoneId) {
+  try {
+    const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
+    const res = await fetch(JSON_URL);
+    const json = await res.json();
+    const apps = json.downloads || [];
+
+    const app = apps.find(x => String(x.zone) === String(zoneId));
+    if (!app) return new Response("Not Found", { status: 404 });
+
+    const fileRes = await fetch(app.url);
+    const headers = new Headers(fileRes.headers);
+
+    const safeName = encodeURIComponent(app.name || "App");
+    headers.set(
+      "Content-Disposition",
+      `attachment; filename="${safeName}.apk"; filename*=UTF-8''${safeName}.apk`
+    );
+    headers.set("Cache-Control", "no-store");
+
+    return new Response(fileRes.body, { status: 200, headers });
+  } catch (err) {
+    return new Response("Download error: " + err.message, { status: 500 });
+  }
+}
+
+/* === 🔑 HMAC 签名 === */
+async function sign(text, secret) {
   const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
+    "raw", new TextEncoder().encode(secret),
     { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
+    false, ["sign"]
   );
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(data)
-  );
-  return Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
+  const signature = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(signature)).map(b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// === 📱 改进版设备指纹算法 ===
-// 目标：同设备换浏览器、换网络仍算同一设备
-/* === 📱 改进版设备指纹（同设备换浏览器 / 换网络 不再重复） === */
+/* === 🧩 安全比较 === */
+function timingSafeCompare(aHex, bHex) {
+  if (aHex.length !== bHex.length) return false;
+  let diff = 0;
+  for (let i = 0; i < aHex.length; i++) diff |= aHex.charCodeAt(i) ^ bHex.charCodeAt(i);
+  return diff === 0;
+}
+
+/* === 📱 稳定设备指纹 === */
 async function getDeviceFingerprint(request, uid, secret) {
-  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
-  const lang = (request.headers.get("Accept-Language") || "").toLowerCase();
-  const accept = (request.headers.get("Accept") || "").toLowerCase();
+  const ua = request.headers.get("User-Agent") || "";
+  const accept = request.headers.get("Accept") || "";
+  const lang = request.headers.get("Accept-Language") || "";
+  const headers = request.headers.get("Sec-Ch-UA-Platform") || "";
+  const secua = request.headers.get("Sec-CH-UA") || "";
 
-  // ✅ 核心：去除浏览器/内核标识，只保留设备+系统特征
-  let cleanedUA = ua
-    // 删除常见浏览器标识
-    .replace(/chrome\/[\d.]+/g, "")
-    .replace(/crios\/[\d.]+/g, "")
-    .replace(/version\/[\d.]+/g, "")
-    .replace(/wv/g, "")
-    .replace(/applewebkit\/[\d.]+/g, "")
-    .replace(/safari\/[\d.]+/g, "")
-    .replace(/mobile/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  // ✅ 提取系统版本
-  const androidVersion = (cleanedUA.match(/android\s*([\d._]+)/) || [])[1] || "android-unknown";
-
-  // ✅ 提取设备型号
-  const modelMatch = cleanedUA.match(/; ([^;]*?build)/i);
-  const model = modelMatch ? modelMatch[1].replace(/build.*/i, "").trim() : "unknown-device";
-
-  // ✅ 判断 TV / 手机
-  const isTV = /tv|mitv|aft|smarttv|googletv|firetv/i.test(cleanedUA);
-  const deviceType = isTV ? "TV" : "Mobile";
-
-  // ✅ 生成稳定基因，不依赖浏览器差异
-  const baseString = `${uid}:${deviceType}:${androidVersion}:${model}:${lang}:${accept}`;
-
-  // 使用 HMAC-SHA256 生成稳定哈希
-  return await sign(baseString, secret);
-}
-  // 生成统一设备签名
-  const baseID = `${uid}:${isTV ? "TV" : "Mobile"}:${androidVersion}:${model}:${lang}`;
-  return await sign(baseID, secret);
-}
-
-// === 🔗 生成实际下载地址 ===
-async function getDownloadURL(file, env) {
-  const downloads = JSON.parse(await env.DOWNLOADS_JSON);
-  const found = downloads.downloads.find((d) =>
-    d.url.includes(file) || d.name.replace(/\s+/g, "").toLowerCase() === file.toLowerCase()
-  );
-  return found ? found.url : "https://example.com/notfound";
+  // ✅ 加入更多 Header 参与计算（同机换浏览器仍一致）
+  const raw = `${uid}:${ua}:${accept}:${lang}:${headers}:${secua}`;
+  return await sign(raw.toLowerCase(), secret);
 }
