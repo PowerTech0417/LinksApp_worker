@@ -34,7 +34,7 @@ async function handleRequest(request) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成设备指纹（跨浏览器稳定） ===
+  // === 2️⃣ 改进版设备指纹 ===
   const deviceFingerprint = await getDeviceFingerprint(request, uid, SIGN_SECRET);
 
   // === 3️⃣ 检查 KV 存储 ===
@@ -48,11 +48,12 @@ async function handleRequest(request) {
 
   if (!stored) stored = { devices: [] };
 
-  // 检查是否已绑定当前设备
+  // 检查当前设备是否已存在
   const existing = stored.devices.find(d => d.fp === deviceFingerprint);
   if (existing) {
     existing.lastUsed = now;
   } else {
+    // 超过最大数量则跳转封锁页
     if (stored.devices.length >= MAX_DEVICES) {
       return Response.redirect(DEVICE_CONFLICT_URL, 302);
     }
@@ -93,6 +94,7 @@ async function handleHiddenDownload(zoneId) {
     const app = apps.find(x => String(x.zone) === String(zoneId));
     if (!app) return new Response("Not Found", { status: 404 });
 
+    // 📦 隐藏真实源并自动命名（支持中文 UTF-8）
     const fileRes = await fetch(app.url);
     const headers = new Headers(fileRes.headers);
 
@@ -128,35 +130,27 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 平衡增强版 v3：跨浏览器稳定识别 === */
+/* === 📱 改进版设备指纹：同设备不同浏览器 → 同一结果 === */
 async function getDeviceFingerprint(request, uid, secret) {
-  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
-  const acceptLang = request.headers.get("Accept-Language") || "";
-  const dnt = request.headers.get("DNT") || "";
+  const ua = request.headers.get("User-Agent") || "";
+  const accept = request.headers.get("Accept") || "";
+  const lang = request.headers.get("Accept-Language") || "";
 
-  // ✅ 提取核心系统信息
-  let deviceInfo = "unknown";
-  const androidMatch = ua.match(/android\s([\d.]+)/);
-  const modelMatch = ua.match(/;\s*([^;]*?)\sbuild/i);
-  const iosMatch = ua.match(/\((iphone|ipad|ipod).*?os\s([\d_]+)/);
-  const tvMatch = ua.match(/(smart[- ]?tv|aft|mi|hisense|tcl|philips|bravia|firetv|shield)/i);
+  // 🔧 去除浏览器差异部分，保留设备与系统特征
+  const simplifiedUA = ua
+    .replace(/Chrome\/[\d.]+/g, "")
+    .replace(/CriOS\/[\d.]+/g, "")
+    .replace(/Version\/[\d.]+/g, "")
+    .replace(/Mobile\/[\w]+/g, "")
+    .replace(/Safari\/[\d.]+/g, "")
+    .replace(/wv/g, "")
+    .replace(/\([^)]*\)/g, "") // 删除括号内系统版本号
+    .replace(/[^A-Za-z0-9]/g, "")
+    .toLowerCase();
 
-  if (androidMatch && modelMatch) {
-    deviceInfo = `android-${androidMatch[1]}-${modelMatch[1].trim()}`;
-  } else if (iosMatch) {
-    deviceInfo = `ios-${iosMatch[1]}-${iosMatch[2].replace(/_/g, ".")}`;
-  } else if (tvMatch) {
-    deviceInfo = `tv-${tvMatch[1].toLowerCase()}`;
-  } else if (ua.includes("windows")) {
-    deviceInfo = "windows";
-  } else if (ua.includes("mac os")) {
-    deviceInfo = "macos";
-  }
+  // ✅ 保留关键信息，不依赖 IP，不含随机 Header
+  const raw = `${uid}:${simplifiedUA}:${lang}:${accept}`;
 
-  // ✅ 去除浏览器特征（chrome、wv、mobile、edg 等）
-  const normalized = deviceInfo.replace(/(chrome|version|wv|mobile|safari|edg|firefox)/gi, "").trim();
-
-  // ✅ 最终指纹（基于系统特征 + UID）
-  const raw = `${uid}:${normalized}:${acceptLang}:${dnt}`;
+  // 同一设备、不同浏览器 → 结果一致
   return await sign(raw, secret);
 }
