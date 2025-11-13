@@ -15,7 +15,7 @@ async function handleRequest(request) {
 
   // === ⚙️ 配置区 ===
   const JSON_URL = "https://raw.githubusercontent.com/PowerTech0417/LinksApp_worker/refs/heads/main/downloads.json";
-  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/id-ban.html";
+  const DEVICE_CONFLICT_URL = "https://life4u22.blogspot.com/p/not-found.html";
   const SIGN_SECRET = "mySuperSecretKey";
   const MAX_DEVICES = 3;
   // =================
