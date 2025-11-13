@@ -22,24 +22,24 @@ async function handleRequest(request) {
   const uid = params.get("uid");
   const zone = parseInt(params.get("zone") || "0");
   const sig = params.get("sig");
-  const imei = params.get("imei") || params.get("device_id") || null; // ✅ 可选IMEI字段支持
+  const imei = params.get("imei") || params.get("device_id") || null;
 
   if (!uid || !sig || zone < 1) {
     return new Response("🚫 Invalid Link: Missing or invalid parameters", { status: 403 });
   }
 
-  // === 1️⃣ 验证签名 ===
+  // === 1️⃣ 签名验证 ===
   const expectedSig = await sign(`${uid}:${zone}`, SIGN_SECRET);
   if (!timingSafeCompare(expectedSig, sig)) {
     return new Response("🚫 Invalid Signature", { status: 403 });
   }
 
-  // === 2️⃣ 生成设备指纹（优先 IMEI / 否则回退 UA 指纹） ===
+  // === 2️⃣ 生成稳定设备指纹 ===
   const deviceFingerprint = imei
-    ? await sign(`imei:${imei}`, SIGN_SECRET) // ✅ 优先IMEI
-    : await getDeviceFingerprint(request, uid, SIGN_SECRET); // ✅ 否则自动生成稳定指纹
+    ? await sign(`imei:${imei}`, SIGN_SECRET)
+    : await getStableFingerprint(request, uid, SIGN_SECRET);
 
-  // === 3️⃣ 检查 KV 存储 ===
+  // === 3️⃣ 检查 KV ===
   if (typeof UID_BINDINGS === "undefined") {
     return new Response("🚨 UID_BINDINGS KV not found.", { status: 503 });
   }
@@ -49,7 +49,6 @@ async function handleRequest(request) {
   const now = Date.now();
   if (!stored) stored = { devices: [] };
 
-  // 查找是否已存在设备
   const existing = stored.devices.find(d => d.fp === deviceFingerprint);
   if (existing) {
     existing.lastUsed = now;
@@ -60,10 +59,9 @@ async function handleRequest(request) {
     stored.devices.push({ fp: deviceFingerprint, lastUsed: now });
   }
 
-  // 永久保存
   await UID_BINDINGS.put(key, JSON.stringify(stored));
 
-  // === 4️⃣ 加载下载配置 JSON ===
+  // === 4️⃣ 加载 JSON ===
   let downloads;
   try {
     const res = await fetch(JSON_URL, { cache: "no-store" });
@@ -78,7 +76,7 @@ async function handleRequest(request) {
     return new Response(`🚫 未找到 Zone ${zone} 的下载链接`, { status: 404 });
   }
 
-  // === 5️⃣ 跳转隐藏下载源 ===
+  // === 5️⃣ 跳转隐藏源 ===
   const redirectTo = `https://${url.hostname}/dl/${zone}`;
   return Response.redirect(redirectTo, 302);
 }
@@ -110,7 +108,7 @@ async function handleHiddenDownload(zoneId) {
   }
 }
 
-/* === 🔑 HMAC 签名 === */
+/* === 🔑 HMAC === */
 async function sign(text, secret) {
   const key = await crypto.subtle.importKey(
     "raw", new TextEncoder().encode(secret),
@@ -129,15 +127,17 @@ function timingSafeCompare(aHex, bHex) {
   return diff === 0;
 }
 
-/* === 📱 稳定设备指纹 === */
-async function getDeviceFingerprint(request, uid, secret) {
-  const ua = request.headers.get("User-Agent") || "";
-  const accept = request.headers.get("Accept") || "";
-  const lang = request.headers.get("Accept-Language") || "";
-  const headers = request.headers.get("Sec-Ch-UA-Platform") || "";
-  const secua = request.headers.get("Sec-CH-UA") || "";
+/* === 📱 稳定设备指纹算法（改良版） === */
+async function getStableFingerprint(request, uid, secret) {
+  const ua = (request.headers.get("User-Agent") || "").toLowerCase();
+  const lang = (request.headers.get("Accept-Language") || "").toLowerCase();
 
-  // ✅ 加入更多 Header 参与计算（同机换浏览器仍一致）
-  const raw = `${uid}:${ua}:${accept}:${lang}:${headers}:${secua}`;
-  return await sign(raw.toLowerCase(), secret);
+  // 提取 Android 版本 & 型号
+  const match = ua.match(/android\s([\d\.]+);\s*([^;]+)\s*build/i);
+  const androidVersion = match ? match[1] : "unknown";
+  const model = match ? match[2].replace(/[^\w\-]/g, "") : "unknown";
+
+  // 构造稳定信息（忽略浏览器差异）
+  const stablePart = `${uid}:${model}:${androidVersion}:${lang}`;
+  return await sign(stablePart, secret);
 }
