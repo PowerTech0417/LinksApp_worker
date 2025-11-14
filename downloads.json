@@ -49,6 +49,16 @@
       "zone": 10,
       "name": "一影视TV",
       "url": "https://github.com/powertech6535/Get/releases/download/m/TV_1video-2.2.0.apk"
+    },
+        {
+      "zone": 11,
+      "name": "翡翠TV直播",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/feicui_tvlive_103.apk"
+    },
+    {
+      "zone": 12,
+      "name": "瓜子手机版",
+      "url": "https://github.com/powertech6535/Get/releases/download/m/guaziyingshi.apk"
     }
   ]
 }
